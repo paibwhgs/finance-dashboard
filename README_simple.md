@@ -13,7 +13,7 @@
 
 ## 在线访问
 
-**Demo**: [点击访问](https://your-username-finance-dashboard.streamlit.app) *(待部署)*
+**Demo**: [点击访问](https://finance-dashboard-t2qmmfszwbr5ywekfgcllv.streamlit.app/)
 
 ## 本地运行
 
