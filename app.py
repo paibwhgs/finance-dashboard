@@ -426,16 +426,25 @@ if data_loaded:
     st.markdown("---")
     st.subheader("📋 详细数据")
     
-    # 显示原始数据
-    if isinstance(stock_data.columns, pd.MultiIndex):
-        st.dataframe(stock_data.tail(20), use_container_width=True)
+    # 显示原始数据（根据时间范围调整显示行数）
+    # "最大" 时间范围显示所有数据，其他显示最近 100 行
+    if time_range == "最大":
+        display_data = stock_data
     else:
-        st.dataframe(stock_data.tail(20), use_container_width=True)
+        display_data = stock_data.tail(100)
     
-    # 下载按钮
+    if isinstance(stock_data.columns, pd.MultiIndex):
+        st.dataframe(display_data, use_container_width=True, height=400)
+    else:
+        st.dataframe(display_data, use_container_width=True, height=400)
+    
+    # 数据显示信息
+    st.caption(f"共 {len(stock_data)} 行数据 | 显示 {len(display_data)} 行")
+    
+    # 下载按钮（下载完整数据）
     csv = stock_data.to_csv()
     st.download_button(
-        label="📥 下载 CSV 数据",
+        label=f"📥 下载完整 CSV 数据（{len(stock_data)} 行）",
         data=csv,
         file_name=f"stock_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
         mime="text/csv",
