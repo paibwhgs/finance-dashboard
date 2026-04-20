@@ -1,5 +1,21 @@
-streamlit>=1.40.0
-yfinance>=0.2.40
-plotly>=5.24.0
-pandas>=2.2.0
-numpy>=1.26.0
+# 金融数据可视化看板 - Streamlit Cloud 部署
+# 安装命令：pip install -r requirements.txt
+
+# 核心框架
+streamlit>=1.28.0
+
+# 数据获取
+yfinance>=0.2.36
+
+# 数据处理
+pandas>=2.0.0
+numpy>=1.24.0
+
+# 可视化
+plotly>=5.18.0
+
+# 时间序列分析
+statsmodels>=0.14.0
+
+# 机器学习（回测功能需要）
+scikit-learn>=1.3.0
