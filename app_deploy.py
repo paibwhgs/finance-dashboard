@@ -550,34 +550,65 @@ st.markdown("---")
 # ==================== 数据获取 ====================
 @st.cache_data(ttl=1800)  # 缓存 30 分钟
 def get_stock_data(symbol, start, end, interval, auto_adjust):
-    """获取股票数据（带重试机制）"""
+    """获取股票数据（使用 Alpha Vantage API 避免速率限制）"""
     import time
+    import requests
     
-    max_retries = 3
-    retry_delay = 3  # 秒
+    # Alpha Vantage API Key
+    API_KEY = "N112YKPQ3O5P6PYA"
+    MAX_RETRIES = 3
     
-    for attempt in range(max_retries):
+    for attempt in range(MAX_RETRIES):
         try:
-            ticker = yf.Ticker(symbol)
-            data = ticker.history(start=start, end=end, interval=interval, auto_adjust=auto_adjust)
+            # 确定数据量
+            days = (end - start).days
+            if days <= 30:
+                outputsize = 'compact'
+            else:
+                outputsize = 'full'
             
-            if data.empty:
+            # 调用 Alpha Vantage API
+            url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize={outputsize}&datatype=json&apikey={API_KEY}"
+            
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            # 检查是否触发 API 限制
+            if "Note" in data:
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(5)
+                    continue
+                return pd.DataFrame(), "Alpha Vantage API 速率限制，请等待 1 分钟后重试"
+            
+            # 提取时间序列数据
+            if "Time Series (Daily)" not in data:
                 return pd.DataFrame(), f"无法获取 {symbol} 的数据"
             
-            return data, None
+            time_series = data["Time Series (Daily)"]
+            
+            # 转换为 DataFrame
+            df = pd.DataFrame.from_dict(time_series, orient='index')
+            df.index = pd.to_datetime(df.index)
+            df = df.sort_index()
+            
+            # 重命名列
+            df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+            df = df.astype(float)
+            
+            # 筛选时间范围
+            df = df[(df.index >= start) & (df.index <= end)]
+            
+            if df.empty:
+                return pd.DataFrame(), f"无法获取 {symbol} 的数据"
+            
+            return df, None
             
         except Exception as e:
-            error_msg = str(e)
-            if "Rate limited" in error_msg or "Too Many Requests" in error_msg:
-                # 速率限制，等待更长时间
-                if attempt < max_retries - 1:
-                    time.sleep(10)  # 等待 10 秒
-                    continue
-                return pd.DataFrame(), "⚠️ Yahoo Finance 速率限制，请等待 1-2 分钟后刷新页面重试"
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(2)
                 continue
-            return pd.DataFrame(), f"数据获取失败：{error_msg}"
+            return pd.DataFrame(), f"数据获取失败：{str(e)}"
     
     return pd.DataFrame(), "数据获取失败"
 
