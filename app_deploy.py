@@ -550,21 +550,49 @@ st.markdown("---")
 # ==================== 数据获取 ====================
 @st.cache_data(ttl=3600)  # 缓存 1 小时
 def get_stock_data(symbol, start, end, interval, auto_adjust):
-    """获取股票数据（带重试机制）"""
+    """获取股票数据（带重试机制和 API Key 支持）"""
     import time
+    import requests
+    
+    # 尝试从 secrets 获取 API Key
+    try:
+        import streamlit as st
+        api_key = st.secrets.get("yahoo_finance", {}).get("api_key", None)
+    except:
+        api_key = None
     
     max_retries = 3
     retry_delay = 2  # 秒
     
     for attempt in range(max_retries):
         try:
-            ticker = yf.Ticker(symbol)
-            data = ticker.history(start=start, end=end, interval=interval, auto_adjust=auto_adjust)
-            
-            if data.empty:
-                return pd.DataFrame(), f"无法获取 {symbol} 的数据，可能代码错误或已退市"
-            
-            return data, None
+            if api_key:
+                # 使用 API Key（通过 RapidAPI）
+                url = "https://yahoo-finance1.p.rapidapi.com/market/v2/get-quotes"
+                querystring = {"region": "US", "symbols": symbol}
+                headers = {
+                    'x-rapidapi-key': api_key,
+                    'x-rapidapi-host': "yahoo-finance1.p.rapidapi.com"
+                }
+                response = requests.get(url, headers=headers, params=querystring, timeout=10)
+                response.raise_for_status()
+                data_json = response.json()
+                # 转换为 DataFrame
+                if data_json and 'quotes' in data_json:
+                    quotes = data_json['quotes']
+                    df = pd.DataFrame(quotes)
+                    return df, None
+                else:
+                    return pd.DataFrame(), "API 返回数据为空"
+            else:
+                # 不使用 API Key（容易受限）
+                ticker = yf.Ticker(symbol)
+                data = ticker.history(start=start, end=end, interval=interval, auto_adjust=auto_adjust)
+                
+                if data.empty:
+                    return pd.DataFrame(), f"无法获取 {symbol} 的数据"
+                
+                return data, None
             
         except Exception as e:
             if attempt < max_retries - 1:
