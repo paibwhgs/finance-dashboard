@@ -161,10 +161,13 @@ def format_large_number(value):
 
 # ==================== 回测引擎 ====================
 
-def backtest_ma_crossover(data, short_window=20, long_window=50, initial_capital=100000):
+def backtest_ma_crossover(data, short_window=20, long_window=50, initial_capital=100000, commission=0.001):
     """
     均线交叉策略回测
     金叉买入（短期均线上穿长期均线），死叉卖出（短期均线下穿长期均线）
+    
+    参数：
+    - commission: 交易成本（默认 0.1%，包含手续费和滑点）
     """
     df = data.copy()
     
@@ -175,11 +178,11 @@ def backtest_ma_crossover(data, short_window=20, long_window=50, initial_capital
     # 生成信号 - 检测交叉动作（不是状态）
     df['signal'] = 0
     
-    # 金叉：今天短期>长期，且昨天短期<长期
+    # 金叉：今天短期>长期，且昨天短期<=长期
     golden_cross = (df['MA_short'] > df['MA_long']) & (df['MA_short'].shift(1) <= df['MA_long'].shift(1))
     df.loc[golden_cross, 'signal'] = 1
     
-    # 死叉：今天短期<长期，且昨天短期>长期
+    # 死叉：今天短期<长期，且昨天短期>=长期
     death_cross = (df['MA_short'] < df['MA_long']) & (df['MA_short'].shift(1) >= df['MA_long'].shift(1))
     df.loc[death_cross, 'signal'] = -1
     
@@ -189,6 +192,10 @@ def backtest_ma_crossover(data, short_window=20, long_window=50, initial_capital
     # 计算收益
     df['returns'] = df['Close'].pct_change()
     df['strategy_returns'] = df['position'].shift(1) * df['returns']
+    
+    # 扣除交易成本（每次交易扣除 commission）
+    df['trades'] = df['position'].diff().abs()
+    df['strategy_returns'] = df['strategy_returns'] - (df['trades'] * commission)
     
     # 累计收益
     df['cumulative_returns'] = (1 + df['returns']).cumprod()
@@ -225,10 +232,13 @@ def backtest_ma_crossover(data, short_window=20, long_window=50, initial_capital
     return df, trades
 
 
-def backtest_rsi_strategy(data, rsi_period=14, oversold=30, overbought=70, initial_capital=100000):
+def backtest_rsi_strategy(data, rsi_period=14, oversold=30, overbought=70, initial_capital=100000, commission=0.001):
     """
     RSI 超买超卖策略回测
-    RSI < 30 买入，RSI > 70 卖出
+    RSI 从下向上穿过超卖线→买入，从上向下穿过超买线→卖出
+    
+    参数：
+    - commission: 交易成本（默认 0.1%，包含手续费和滑点）
     """
     df = data.copy()
     
@@ -239,17 +249,27 @@ def backtest_rsi_strategy(data, rsi_period=14, oversold=30, overbought=70, initi
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
     
-    # 生成信号
+    # 生成信号 - 检测交叉动作（不是状态）
     df['signal'] = 0
-    df.loc[df['RSI'] < oversold, 'signal'] = 1  # 超卖买入
-    df.loc[df['RSI'] > overbought, 'signal'] = -1  # 超买卖出
+    
+    # 买入：RSI 从下向上穿过超卖线
+    buy_signal = (df['RSI'] < oversold) & (df['RSI'].shift(1) >= oversold)
+    df.loc[buy_signal, 'signal'] = 1
+    
+    # 卖出：RSI 从上向下穿过超买线
+    sell_signal = (df['RSI'] > overbought) & (df['RSI'].shift(1) <= overbought)
+    df.loc[sell_signal, 'signal'] = -1
     
     # 计算持仓
     df['position'] = df['signal'].shift(1)
     
-    # 计算收益
+    # 计算收益（扣除交易成本）
     df['returns'] = df['Close'].pct_change()
     df['strategy_returns'] = df['position'].shift(1) * df['returns']
+    
+    # 扣除交易成本（每次交易扣除 commission）
+    df['trades'] = df['position'].diff().abs()
+    df['strategy_returns'] = df['strategy_returns'] - (df['trades'] * commission)
     
     # 累计收益
     df['cumulative_returns'] = (1 + df['returns']).cumprod()
@@ -263,11 +283,11 @@ def backtest_rsi_strategy(data, rsi_period=14, oversold=30, overbought=70, initi
     entry_date = None
     
     for idx, row in df.iterrows():
-        if row['signal'] == 1 and position == 0:
+        if row['signal'] == 1 and position == 0:  # 买入
             position = 1
             entry_price = row['Close']
             entry_date = idx
-        elif row['signal'] == -1 and position == 1:
+        elif row['signal'] == -1 and position == 1:  # 卖出
             position = 0
             exit_price = row['Close']
             exit_date = idx
@@ -286,10 +306,13 @@ def backtest_rsi_strategy(data, rsi_period=14, oversold=30, overbought=70, initi
     return df, trades
 
 
-def backtest_bollinger_strategy(data, bb_period=20, bb_std=2, initial_capital=100000):
+def backtest_bollinger_strategy(data, bb_period=20, bb_std=2, initial_capital=100000, commission=0.001):
     """
     布林带策略回测
-    跌破下轨买入，突破上轨卖出
+    价格从下向上穿过下轨→买入，从上向下穿过上轨→卖出
+    
+    参数：
+    - commission: 交易成本（默认 0.1%）
     """
     df = data.copy()
     
@@ -299,17 +322,25 @@ def backtest_bollinger_strategy(data, bb_period=20, bb_std=2, initial_capital=10
     df['Upper'] = df['MA'] + (bb_std * df['STD'])
     df['Lower'] = df['MA'] - (bb_std * df['STD'])
     
-    # 生成信号
+    # 生成信号 - 检测交叉动作
     df['signal'] = 0
-    df.loc[df['Close'] < df['Lower'], 'signal'] = 1  # 跌破下轨买入
-    df.loc[df['Close'] > df['Upper'], 'signal'] = -1  # 突破上轨卖出
+    
+    # 买入：价格从下向上穿过下轨（前一天在下轨下方，今天在下轨上方）
+    buy_signal = (df['Close'] < df['Lower']) & (df['Close'].shift(1) >= df['Lower'].shift(1))
+    df.loc[buy_signal, 'signal'] = 1
+    
+    # 卖出：价格从上向下穿过上轨
+    sell_signal = (df['Close'] > df['Upper']) & (df['Close'].shift(1) <= df['Upper'].shift(1))
+    df.loc[sell_signal, 'signal'] = -1
     
     # 计算持仓
     df['position'] = df['signal'].shift(1)
     
-    # 计算收益
+    # 计算收益（扣除交易成本）
     df['returns'] = df['Close'].pct_change()
     df['strategy_returns'] = df['position'].shift(1) * df['returns']
+    df['trades'] = df['position'].diff().abs()
+    df['strategy_returns'] = df['strategy_returns'] - (df['trades'] * commission)
     
     # 累计收益
     df['cumulative_returns'] = (1 + df['returns']).cumprod()
@@ -317,6 +348,33 @@ def backtest_bollinger_strategy(data, bb_period=20, bb_std=2, initial_capital=10
     df['portfolio_value'] = initial_capital * df['cumulative_strategy_returns']
     
     # 生成交易记录
+    trades = []
+    position = 0
+    entry_price = 0
+    entry_date = None
+    
+    for idx, row in df.iterrows():
+        if row['signal'] == 1 and position == 0:  # 买入
+            position = 1
+            entry_price = row['Close']
+            entry_date = idx
+        elif row['signal'] == -1 and position == 1:  # 卖出
+            position = 0
+            exit_price = row['Close']
+            exit_date = idx
+            pnl = (exit_price - entry_price) / entry_price * 100
+            trades.append({
+                '买入日期': entry_date.strftime('%Y-%m-%d'),
+                '卖出日期': exit_date.strftime('%Y-%m-%d'),
+                '买入价格': f"${entry_price:.2f}",
+                '卖出价格': f"${exit_price:.2f}",
+                '盈亏 (%)': f"{pnl:+.2f}%",
+                '盈亏方向': '🟢' if pnl > 0 else '🔴'
+            })
+            entry_price = 0
+            entry_date = None
+    
+    return df, trades
     trades = []
     position = 0
     entry_price = 0
