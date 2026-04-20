@@ -164,7 +164,7 @@ def format_large_number(value):
 def backtest_ma_crossover(data, short_window=20, long_window=50, initial_capital=100000):
     """
     均线交叉策略回测
-    金叉买入，死叉卖出
+    金叉买入（短期均线上穿长期均线），死叉卖出（短期均线下穿长期均线）
     """
     df = data.copy()
     
@@ -172,27 +172,27 @@ def backtest_ma_crossover(data, short_window=20, long_window=50, initial_capital
     df['MA_short'] = df['Close'].rolling(window=short_window).mean()
     df['MA_long'] = df['Close'].rolling(window=long_window).mean()
     
-    # 生成信号
+    # 生成信号 - 检测交叉动作（不是状态）
     df['signal'] = 0
-    df['position'] = 0
     
-    # 金叉（短期均线上穿长期均线）→ 买入信号
-    df.loc[df['MA_short'] > df['MA_long'], 'signal'] = 1
-    # 死叉（短期均线下穿长期均线）→ 卖出信号
-    df.loc[df['MA_short'] < df['MA_long'], 'signal'] = -1
+    # 金叉：今天短期>长期，且昨天短期<长期
+    golden_cross = (df['MA_short'] > df['MA_long']) & (df['MA_short'].shift(1) <= df['MA_long'].shift(1))
+    df.loc[golden_cross, 'signal'] = 1
     
-    # 计算持仓（有信号后一天才执行）
+    # 死叉：今天短期<长期，且昨天短期>长期
+    death_cross = (df['MA_short'] < df['MA_long']) & (df['MA_short'].shift(1) >= df['MA_long'].shift(1))
+    df.loc[death_cross, 'signal'] = -1
+    
+    # 计算持仓（信号后一天执行）
     df['position'] = df['signal'].shift(1)
     
-    # 计算策略收益
+    # 计算收益
     df['returns'] = df['Close'].pct_change()
     df['strategy_returns'] = df['position'].shift(1) * df['returns']
     
-    # 计算累计收益
+    # 累计收益
     df['cumulative_returns'] = (1 + df['returns']).cumprod()
     df['cumulative_strategy_returns'] = (1 + df['strategy_returns']).cumprod()
-    
-    # 计算资金曲线
     df['portfolio_value'] = initial_capital * df['cumulative_strategy_returns']
     
     # 生成交易记录
@@ -202,11 +202,11 @@ def backtest_ma_crossover(data, short_window=20, long_window=50, initial_capital
     entry_date = None
     
     for idx, row in df.iterrows():
-        if row['signal'] == 1 and position == 0:  # 买入
+        if row['signal'] == 1 and position == 0:  # 金叉买入
             position = 1
             entry_price = row['Close']
             entry_date = idx
-        elif row['signal'] == -1 and position == 1:  # 卖出
+        elif row['signal'] == -1 and position == 1:  # 死叉卖出
             position = 0
             exit_price = row['Close']
             exit_date = idx
