@@ -125,8 +125,6 @@ pip install -r requirements.txt
 | 版本 | 日期 | 功能 |
 |------|------|------|
 | v1.0 | 2026-03-30 | 基础 K 线图、技术指标 |
-| v2.0 | 2026-04-20 | 时间序列分析 |
-| v3.0 | 2026-04-20 | 数据层深化（复权、财务数据） |
 | v4.0 | 2026-04-20 | 量化回测（3 种策略、绩效评估） |
 
 ## 🤝 贡献
@@ -137,10 +135,7 @@ pip install -r requirements.txt
 
 MIT License
 
-## 📞 联系
 
-- GitHub Issues: [提交问题](https://github.com/your-username/finance-dashboard/issues)
-- Email: your-email@example.com
 
 ---
 
