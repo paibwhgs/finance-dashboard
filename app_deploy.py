@@ -548,59 +548,38 @@ st.markdown("### 量化回测版 - 策略回测 · 绩效评估 · 交易信号"
 st.markdown("---")
 
 # ==================== 数据获取 ====================
-@st.cache_data(ttl=3600)  # 缓存 1 小时
+@st.cache_data(ttl=1800)  # 缓存 30 分钟
 def get_stock_data(symbol, start, end, interval, auto_adjust):
-    """获取股票数据（带重试机制和 API Key 支持）"""
+    """获取股票数据（带重试机制）"""
     import time
-    import requests
-    
-    # 尝试从 secrets 获取 API Key
-    try:
-        import streamlit as st
-        api_key = st.secrets.get("yahoo_finance", {}).get("api_key", None)
-    except:
-        api_key = None
     
     max_retries = 3
-    retry_delay = 2  # 秒
+    retry_delay = 3  # 秒
     
     for attempt in range(max_retries):
         try:
-            if api_key:
-                # 使用 API Key（通过 RapidAPI）
-                url = "https://yahoo-finance1.p.rapidapi.com/market/v2/get-quotes"
-                querystring = {"region": "US", "symbols": symbol}
-                headers = {
-                    'x-rapidapi-key': api_key,
-                    'x-rapidapi-host': "yahoo-finance1.p.rapidapi.com"
-                }
-                response = requests.get(url, headers=headers, params=querystring, timeout=10)
-                response.raise_for_status()
-                data_json = response.json()
-                # 转换为 DataFrame
-                if data_json and 'quotes' in data_json:
-                    quotes = data_json['quotes']
-                    df = pd.DataFrame(quotes)
-                    return df, None
-                else:
-                    return pd.DataFrame(), "API 返回数据为空"
-            else:
-                # 不使用 API Key（容易受限）
-                ticker = yf.Ticker(symbol)
-                data = ticker.history(start=start, end=end, interval=interval, auto_adjust=auto_adjust)
-                
-                if data.empty:
-                    return pd.DataFrame(), f"无法获取 {symbol} 的数据"
-                
-                return data, None
+            ticker = yf.Ticker(symbol)
+            data = ticker.history(start=start, end=end, interval=interval, auto_adjust=auto_adjust)
+            
+            if data.empty:
+                return pd.DataFrame(), f"无法获取 {symbol} 的数据"
+            
+            return data, None
             
         except Exception as e:
+            error_msg = str(e)
+            if "Rate limited" in error_msg or "Too Many Requests" in error_msg:
+                # 速率限制，等待更长时间
+                if attempt < max_retries - 1:
+                    time.sleep(10)  # 等待 10 秒
+                    continue
+                return pd.DataFrame(), "⚠️ Yahoo Finance 速率限制，请等待 1-2 分钟后刷新页面重试"
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 continue
-            return pd.DataFrame(), f"数据获取失败：{str(e)}"
+            return pd.DataFrame(), f"数据获取失败：{error_msg}"
     
-    return pd.DataFrame(), "数据获取失败（多次重试后仍失败）"
+    return pd.DataFrame(), "数据获取失败"
 
 with st.spinner(f"📡 正在获取 {selected_symbol} 的数据..."):
     stock_data, error = get_stock_data(selected_symbol, start_date, end_date, timeframe, auto_adjust)
