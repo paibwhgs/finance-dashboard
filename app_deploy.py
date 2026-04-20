@@ -548,15 +548,31 @@ st.markdown("### 量化回测版 - 策略回测 · 绩效评估 · 交易信号"
 st.markdown("---")
 
 # ==================== 数据获取 ====================
-@st.cache_data
+@st.cache_data(ttl=3600)  # 缓存 1 小时
 def get_stock_data(symbol, start, end, interval, auto_adjust):
-    """获取股票数据"""
-    try:
-        ticker = yf.Ticker(symbol)
-        data = ticker.history(start=start, end=end, interval=interval, auto_adjust=auto_adjust)
-        return data, None
-    except Exception as e:
-        return pd.DataFrame(), str(e)
+    """获取股票数据（带重试机制）"""
+    import time
+    
+    max_retries = 3
+    retry_delay = 2  # 秒
+    
+    for attempt in range(max_retries):
+        try:
+            ticker = yf.Ticker(symbol)
+            data = ticker.history(start=start, end=end, interval=interval, auto_adjust=auto_adjust)
+            
+            if data.empty:
+                return pd.DataFrame(), f"无法获取 {symbol} 的数据，可能代码错误或已退市"
+            
+            return data, None
+            
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            return pd.DataFrame(), f"数据获取失败：{str(e)}"
+    
+    return pd.DataFrame(), "数据获取失败（多次重试后仍失败）"
 
 with st.spinner(f"📡 正在获取 {selected_symbol} 的数据..."):
     stock_data, error = get_stock_data(selected_symbol, start_date, end_date, timeframe, auto_adjust)
