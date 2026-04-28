@@ -114,28 +114,46 @@ def check_data_quality(df, symbol):
     return issues, score, f"{rating_color} {rating} ({score}分)"
 
 
-@st.cache_data
+def _safe_get(info, key, default='N/A'):
+    """安全获取字典值，处理 None 和缺失情况"""
+    val = info.get(key)
+    return val if val is not None and val != '' else default
+
+
+@st.cache_data(ttl=3600)
 def get_financial_info(symbol):
     """获取财务信息"""
-    try:
-        ticker = yf.Ticker(symbol)
-        info = ticker.info
-        
-        financial_data = {
-            '市值': info.get('marketCap', 'N/A'),
-            '市盈率 (TTM)': info.get('trailingPE', 'N/A'),
-            '市净率': info.get('priceToBook', 'N/A'),
-            '股息率': info.get('dividendYield', 'N/A'),
-            '贝塔系数': info.get('beta', 'N/A'),
-            '52 周最高': info.get('fiftyTwoWeekHigh', 'N/A'),
-            '52 周最低': info.get('fiftyTwoWeekLow', 'N/A'),
-            '行业': info.get('industry', 'N/A'),
-            '板块': info.get('sector', 'N/A'),
-        }
-        
-        return financial_data, info.get('longBusinessSummary', 'N/A')
-    except Exception as e:
-        return {'错误': str(e)}, 'N/A'
+    import time
+
+    MAX_RETRIES = 3
+    for attempt in range(MAX_RETRIES):
+        try:
+            ticker = yf.Ticker(symbol)
+            info = ticker.info
+
+            if not info or len(info) < 5:
+                raise ValueError("返回的财务数据为空")
+
+            financial_data = {
+                '市值': _safe_get(info, 'marketCap'),
+                '市盈率 (TTM)': _safe_get(info, 'trailingPE'),
+                '市净率': _safe_get(info, 'priceToBook'),
+                '股息率': _safe_get(info, 'dividendYield'),
+                '贝塔系数': _safe_get(info, 'beta'),
+                '52 周最高': _safe_get(info, 'fiftyTwoWeekHigh'),
+                '52 周最低': _safe_get(info, 'fiftyTwoWeekLow'),
+                '行业': _safe_get(info, 'industry'),
+                '板块': _safe_get(info, 'sector'),
+            }
+
+            business_summary = _safe_get(info, 'longBusinessSummary')
+            return financial_data, business_summary
+
+        except Exception as e:
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(2)
+                continue
+            return {'错误': f'获取失败（已重试{MAX_RETRIES}次）: {str(e)}'}, 'N/A'
 
 
 def format_large_number(value):
@@ -185,29 +203,31 @@ def backtest_ma_crossover(data, short_window=20, long_window=50, initial_capital
     # 死叉：今天短期<长期，且昨天短期>=长期
     death_cross = (df['MA_short'] < df['MA_long']) & (df['MA_short'].shift(1) >= df['MA_long'].shift(1))
     df.loc[death_cross, 'signal'] = -1
-    
-    # 计算持仓（信号后一天执行）
-    df['position'] = df['signal'].shift(1)
-    
+
+    # 计算持仓 - 在信号之间持续保持仓位，信号后一天执行
+    df['position_raw'] = df['signal'].replace(0, np.nan).ffill().fillna(0)
+    df['position_raw'] = df['position_raw'].clip(lower=0)  # -1(卖出) → 0(空仓)
+    df['position'] = df['position_raw'].shift(1)  # 信号次日执行
+
     # 计算收益
     df['returns'] = df['Close'].pct_change()
-    df['strategy_returns'] = df['position'].shift(1) * df['returns']
-    
-    # 扣除交易成本（每次交易扣除 commission）
+    df['strategy_returns'] = df['position'] * df['returns']
+
+    # 扣除交易成本（只在有交易时扣除）
     df['trades'] = df['position'].diff().abs()
-    df['strategy_returns'] = df['strategy_returns'] - (df['trades'] * commission)
-    
+    df['strategy_returns'] = df['strategy_returns'] - (df['trades'] * commission / 2)  # 单边成本
+
     # 累计收益
     df['cumulative_returns'] = (1 + df['returns']).cumprod()
     df['cumulative_strategy_returns'] = (1 + df['strategy_returns']).cumprod()
     df['portfolio_value'] = initial_capital * df['cumulative_strategy_returns']
-    
+
     # 生成交易记录
     trades = []
     position = 0
     entry_price = 0
     entry_date = None
-    
+
     for idx, row in df.iterrows():
         if row['signal'] == 1 and position == 0:  # 金叉买入
             position = 1
@@ -228,7 +248,7 @@ def backtest_ma_crossover(data, short_window=20, long_window=50, initial_capital
             })
             entry_price = 0
             entry_date = None
-    
+
     return df, trades
 
 
@@ -260,28 +280,30 @@ def backtest_rsi_strategy(data, rsi_period=14, oversold=30, overbought=70, initi
     sell_signal = (df['RSI'] > overbought) & (df['RSI'].shift(1) <= overbought)
     df.loc[sell_signal, 'signal'] = -1
     
-    # 计算持仓
-    df['position'] = df['signal'].shift(1)
-    
+    # 计算持仓 - 在信号之间持续保持仓位，信号后一天执行
+    df['position_raw'] = df['signal'].replace(0, np.nan).ffill().fillna(0)
+    df['position_raw'] = df['position_raw'].clip(lower=0)  # -1(卖出) → 0(空仓)
+    df['position'] = df['position_raw'].shift(1)  # 信号次日执行
+
     # 计算收益（扣除交易成本）
     df['returns'] = df['Close'].pct_change()
-    df['strategy_returns'] = df['position'].shift(1) * df['returns']
-    
-    # 扣除交易成本（每次交易扣除 commission）
+    df['strategy_returns'] = df['position'] * df['returns']
+
+    # 扣除交易成本（只在有交易时扣除）
     df['trades'] = df['position'].diff().abs()
-    df['strategy_returns'] = df['strategy_returns'] - (df['trades'] * commission)
-    
+    df['strategy_returns'] = df['strategy_returns'] - (df['trades'] * commission / 2)  # 单边成本
+
     # 累计收益
     df['cumulative_returns'] = (1 + df['returns']).cumprod()
     df['cumulative_strategy_returns'] = (1 + df['strategy_returns']).cumprod()
     df['portfolio_value'] = initial_capital * df['cumulative_strategy_returns']
-    
+
     # 生成交易记录
     trades = []
     position = 0
     entry_price = 0
     entry_date = None
-    
+
     for idx, row in df.iterrows():
         if row['signal'] == 1 and position == 0:  # 买入
             position = 1
@@ -333,26 +355,28 @@ def backtest_bollinger_strategy(data, bb_period=20, bb_std=2, initial_capital=10
     sell_signal = (df['Close'] > df['Upper']) & (df['Close'].shift(1) <= df['Upper'].shift(1))
     df.loc[sell_signal, 'signal'] = -1
     
-    # 计算持仓
-    df['position'] = df['signal'].shift(1)
-    
+    # 计算持仓 - 在信号之间持续保持仓位，信号后一天执行
+    df['signal_pos'] = df['signal'].replace(0, np.nan).ffill().fillna(0)
+    df['signal_pos'] = df['signal_pos'].clip(lower=0)  # -1(卖出) → 0(空仓)
+    df['position'] = df['signal_pos'].shift(1)  # 信号次日执行
+
     # 计算收益（扣除交易成本）
     df['returns'] = df['Close'].pct_change()
-    df['strategy_returns'] = df['position'].shift(1) * df['returns']
+    df['strategy_returns'] = df['position'] * df['returns']
     df['trades'] = df['position'].diff().abs()
-    df['strategy_returns'] = df['strategy_returns'] - (df['trades'] * commission)
-    
+    df['strategy_returns'] = df['strategy_returns'] - (df['trades'] * commission / 2)
+
     # 累计收益
     df['cumulative_returns'] = (1 + df['returns']).cumprod()
     df['cumulative_strategy_returns'] = (1 + df['strategy_returns']).cumprod()
     df['portfolio_value'] = initial_capital * df['cumulative_strategy_returns']
-    
+
     # 生成交易记录
     trades = []
     position = 0
     entry_price = 0
     entry_date = None
-    
+
     for idx, row in df.iterrows():
         if row['signal'] == 1 and position == 0:  # 买入
             position = 1
@@ -373,34 +397,7 @@ def backtest_bollinger_strategy(data, bb_period=20, bb_std=2, initial_capital=10
             })
             entry_price = 0
             entry_date = None
-    
-    return df, trades
-    trades = []
-    position = 0
-    entry_price = 0
-    entry_date = None
-    
-    for idx, row in df.iterrows():
-        if row['signal'] == 1 and position == 0:
-            position = 1
-            entry_price = row['Close']
-            entry_date = idx
-        elif row['signal'] == -1 and position == 1:
-            position = 0
-            exit_price = row['Close']
-            exit_date = idx
-            pnl = (exit_price - entry_price) / entry_price * 100
-            trades.append({
-                '买入日期': entry_date.strftime('%Y-%m-%d'),
-                '卖出日期': exit_date.strftime('%Y-%m-%d'),
-                '买入价格': f"${entry_price:.2f}",
-                '卖出价格': f"${exit_price:.2f}",
-                '盈亏 (%)': f"{pnl:+.2f}%",
-                '盈亏方向': '🟢' if pnl > 0 else '🔴'
-            })
-            entry_price = 0
-            entry_date = None
-    
+
     return df, trades
 
 
@@ -417,9 +414,13 @@ def calculate_performance_metrics(df, trades, initial_capital=100000):
     years = total_days / 252
     annual_return = (1 + total_returns) ** (1 / years) - 1 if years > 0 else 0
     
-    # 波动率
-    daily_vol = df['strategy_returns'].std()
-    annual_vol = daily_vol * np.sqrt(252)
+    # 波动率（使用日收益率计算）
+    daily_returns = df['strategy_returns'].dropna()
+    if len(daily_returns) > 0:
+        daily_vol = daily_returns.std()
+        annual_vol = daily_vol * np.sqrt(252)
+    else:
+        annual_vol = 0
     
     # 夏普比率（假设无风险利率 2%）
     risk_free_rate = 0.02
@@ -446,6 +447,9 @@ def calculate_performance_metrics(df, trades, initial_capital=100000):
     else:
         profit_loss_ratio = 0
     
+    # 买入持有收益（基准）
+    buy_hold_return = (df['Close'].iloc[-1] / df['Close'].iloc[0] - 1) * 100
+    
     return {
         '总收益率': f"{total_returns * 100:.2f}%",
         '年化收益率': f"{annual_return * 100:.2f}%",
@@ -456,7 +460,8 @@ def calculate_performance_metrics(df, trades, initial_capital=100000):
         '胜率': f"{win_rate:.1f}%",
         '盈亏比': f"{profit_loss_ratio:.2f}",
         '最终资金': f"${df['portfolio_value'].iloc[-1]:,.2f}",
-        '总天数': total_days
+        '总天数': total_days,
+        '买入持有收益': f"{buy_hold_return:.2f}%"
     }
 
 
@@ -608,59 +613,20 @@ st.markdown("---")
 # ==================== 数据获取 ====================
 @st.cache_data(ttl=1800)  # 缓存 30 分钟
 def get_stock_data(symbol, start, end, interval, auto_adjust):
-    """获取股票数据（使用 Alpha Vantage API 避免速率限制）"""
+    """获取股票数据（使用 yfinance）"""
     import time
-    import requests
     
-    # Alpha Vantage API Key
-    API_KEY = "N112YKPQ3O5P6PYA"
     MAX_RETRIES = 3
     
     for attempt in range(MAX_RETRIES):
         try:
-            # 确定数据量
-            days = (end - start).days
-            if days <= 30:
-                outputsize = 'compact'
-            else:
-                outputsize = 'full'
+            ticker = yf.Ticker(symbol)
+            data = ticker.history(start=start, end=end, interval='1d', auto_adjust=auto_adjust)
             
-            # 调用 Alpha Vantage API
-            url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize={outputsize}&datatype=json&apikey={API_KEY}"
-            
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            
-            # 检查是否触发 API 限制
-            if "Note" in data:
-                if attempt < MAX_RETRIES - 1:
-                    time.sleep(5)
-                    continue
-                return pd.DataFrame(), "Alpha Vantage API 速率限制，请等待 1 分钟后重试"
-            
-            # 提取时间序列数据
-            if "Time Series (Daily)" not in data:
+            if data.empty:
                 return pd.DataFrame(), f"无法获取 {symbol} 的数据"
             
-            time_series = data["Time Series (Daily)"]
-            
-            # 转换为 DataFrame
-            df = pd.DataFrame.from_dict(time_series, orient='index')
-            df.index = pd.to_datetime(df.index)
-            df = df.sort_index()
-            
-            # 重命名列
-            df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-            df = df.astype(float)
-            
-            # 筛选时间范围
-            df = df[(df.index >= start) & (df.index <= end)]
-            
-            if df.empty:
-                return pd.DataFrame(), f"无法获取 {symbol} 的数据"
-            
-            return df, None
+            return data, None
             
         except Exception as e:
             if attempt < MAX_RETRIES - 1:
@@ -770,7 +736,7 @@ if mode == "📊 数据查看":
     # ========== 高级模式：时间序列分析 ==========
     if advanced_mode:
         st.markdown("---")
-        st.subheader(" 时间序列分析（高级模式）")
+        st.subheader("🔬 时间序列分析（高级模式）")
         
         ts_data = stock_data.copy()
         ts_data['log_return'] = np.log(ts_data['Close'] / ts_data['Close'].shift(1)).dropna()
