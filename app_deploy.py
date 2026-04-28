@@ -15,6 +15,20 @@ from statsmodels.tsa.seasonal import seasonal_decompose
 from statsmodels.tsa.stattools import adfuller, acf, pacf
 from statsmodels.tsa.arima.model import ARIMA
 import warnings
+import requests
+
+# yfinance 全局请求配置（降低被 Yahoo 限流概率）
+try:
+    _http_session = requests.Session()
+    _http_session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+    })
+    yf._session = _http_session
+except Exception:
+    pass
+
 warnings.filterwarnings('ignore')
 
 # ==================== 页面配置 ====================
@@ -611,30 +625,34 @@ st.markdown("### 量化回测版 - 策略回测 · 绩效评估 · 交易信号"
 st.markdown("---")
 
 # ==================== 数据获取 ====================
-@st.cache_data(ttl=1800)  # 缓存 30 分钟
+@st.cache_data(ttl=3600)  # 缓存 1 小时
 def get_stock_data(symbol, start, end, interval, auto_adjust):
-    """获取股票数据（使用 yfinance）"""
+    """获取股票数据（使用 yfinance，带重试避免限流）"""
     import time
-    
-    MAX_RETRIES = 3
-    
+
+    MAX_RETRIES = 4
+    errors = []
+
     for attempt in range(MAX_RETRIES):
         try:
             ticker = yf.Ticker(symbol)
             data = ticker.history(start=start, end=end, interval='1d', auto_adjust=auto_adjust)
-            
-            if data.empty:
-                return pd.DataFrame(), f"无法获取 {symbol} 的数据"
-            
-            return data, None
-            
+
+            if data is not None and not data.empty:
+                return data, None
+
+            errors.append(f"尝试 {attempt+1}: 数据为空")
+
         except Exception as e:
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(2)
-                continue
-            return pd.DataFrame(), f"数据获取失败：{str(e)}"
-    
-    return pd.DataFrame(), "数据获取失败"
+            err_msg = str(e)
+            errors.append(f"尝试 {attempt+1}: {err_msg}")
+            delay = 8 * (attempt + 1) if ('Too Many' in err_msg or 'Rate' in err_msg) else 3 * (attempt + 1)
+            time.sleep(delay)
+            continue
+
+        time.sleep(2)
+
+    return pd.DataFrame(), f"获取失败（{MAX_RETRIES}次重试）: {'; '.join(errors[-2:])}"
 
 with st.spinner(f"📡 正在获取 {selected_symbol} 的数据..."):
     stock_data, error = get_stock_data(selected_symbol, start_date, end_date, timeframe, auto_adjust)
