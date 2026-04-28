@@ -136,10 +136,10 @@ def _safe_get(info, key, default='N/A'):
 
 @st.cache_data(ttl=3600)
 def get_financial_info(symbol):
-    """获取财务信息"""
+    """获取财务信息（带重试避免限流）"""
     import time
 
-    MAX_RETRIES = 3
+    MAX_RETRIES = 4
     for attempt in range(MAX_RETRIES):
         try:
             ticker = yf.Ticker(symbol)
@@ -165,7 +165,9 @@ def get_financial_info(symbol):
 
         except Exception as e:
             if attempt < MAX_RETRIES - 1:
-                time.sleep(2)
+                err_msg = str(e)
+                delay = 8 * (attempt + 1) if ('Too Many' in err_msg or 'Rate' in err_msg) else 3 * (attempt + 1)
+                time.sleep(delay)
                 continue
             return {'错误': f'获取失败（已重试{MAX_RETRIES}次）: {str(e)}'}, 'N/A'
 
